@@ -87,8 +87,8 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
             //seteaza permisiunea explicit, pentru cazul in care directorul exista deja
-            chmod(arg1, 0750);
         }
+        chmod(arg1, 0750);
         //buffer pentru path
         char path[256];
         //e.g. "district1/reports.dat"
