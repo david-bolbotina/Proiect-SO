@@ -86,22 +86,22 @@ int main(int argc, char *argv[]) {
                 perror("mkdir failed");
                 return 1;
             }
-            //seteaza permisiunea explicit, pentru cazul in care directorul exista deja
         }
+        //seteaza permisiunea explicit, pentru cazul in care directorul exista deja
         chmod(arg1, 0750);
         //buffer pentru path
         char path[256];
         //e.g. "district1/reports.dat"
         snprintf(path, sizeof(path), "%s/reports.dat", arg1);
-        //creare fisier cu permisiune 664
-        int fd = open(path, O_CREAT | O_RDWR, 0664);
+        //creare fisier cu permisiune 644
+        int fd = open(path, O_CREAT | O_RDWR, 0644);
         //daca fisierul exista deja, nu e o eroare
         if (fd == -1) {
             perror("open reports.dat");
             return 1;
         }
         //seteaza permisiunea explicit, pentru cazul in care fisierul exista deja
-        chmod(path, 0664);
+        chmod(path, 0644);
         close(fd);
         
         //aceeasi chestie si pentru restu
@@ -122,7 +122,7 @@ int main(int argc, char *argv[]) {
             perror("open logged_district");
             return 1;
         }
-        chmod(path, 0664);
+        chmod(path, 0644);
         close(fd);
     }
     
