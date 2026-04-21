@@ -7,12 +7,33 @@
 //fisiere
 #include <fcntl.h>
 #include <unistd.h>
+//lungimi; padding pentru reporturi, etc
+#define NAME_LEN 50
+#define CATEGORY_LEN 20
+#define DESC_LEN 100
+//timestamp pt report file
+#include <time.h>
+
+typedef struct {
+    int id;
+    int severity;
+
+    float latitude;
+    float longitude;
+
+    time_t timestamp;
+
+    char inspector[NAME_LEN];
+    char category[CATEGORY_LEN];
+    char description[DESC_LEN];
+
+}Report;
 
 int main(int argc, char *argv[]) {
 
     //argumente
-    if (argc < 3) {
-        printf("Usage: %s --role <inspector|manager> [command]\n", argv[0]);
+    if (argc < 5) {
+        printf("Usage: %s --role <inspector|manager> --user <username> [command]\n", argv[0]);
         return 1;
     }
 
@@ -124,7 +145,56 @@ int main(int argc, char *argv[]) {
         }
         chmod(path, 0664);
         close(fd);
+
+
+        
+        snprintf(path, sizeof(path), "%s/reports.dat", arg1);
+
+        fd = open(path, O_RDWR);
+        if (fd == -1) {
+            perror("open reports.dat");
+            return 1;
+        }
+        //calculeaza id-ul urmatorului report; pentru asta, folosim lseek pentru a afla dimensiunea fisierului
+        off_t size = lseek(fd, 0, SEEK_END);    
+        if (size == -1) {
+            perror("lseek failed");
+            close(fd);
+            return 1;
+        }
+        //apoi impartim la dimensiunea unui report pentru a afla cate reporturi exista deja, si adaugam 1 pentru a obtine id
+        int next_id = size / sizeof(Report) + 1;
+        printf("Next report ID: %d\n", next_id);
+        //initializam cu 0 pentru a evita garbage data in padding
+        Report r = {0};
+
+        r.id = next_id;
+        r.severity = 2;
+
+        r.latitude = 45.75f;
+        r.longitude = 21.23f;
+
+        r.timestamp = time(NULL);
+
+        strncpy(r.inspector, user, NAME_LEN);
+        r.inspector[NAME_LEN - 1] = '\0';
+
+        strncpy(r.category, "road", CATEGORY_LEN);
+        r.category[CATEGORY_LEN - 1] = '\0';
+
+        strncpy(r.description, "Test report", DESC_LEN);
+        r.description[DESC_LEN - 1] = '\0';
+
+        if (write(fd, &r, sizeof(Report)) != sizeof(Report)) {
+            perror("write failed");
+            close(fd);
+            return 1;
+        }
+
+        close(fd);
     }
+
+    printf("Size of Report: %zu bytes\n", sizeof(Report));
     
 
     return 0;
