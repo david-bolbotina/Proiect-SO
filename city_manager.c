@@ -477,35 +477,36 @@ int main(int argc, char *argv[]) {
             return 1;
         }
         
-        //offset pt gasirea raportului cu id-ul dat
-        off_t offset = (id - 1) * sizeof(Report);
 
-        //verifica daca offset-ul e in afara limitelor fisierului
-        if (lseek(fd, offset, SEEK_SET) == -1) {
-            perror("lseek failed");
-            close(fd);
-            return 1;
-        }
-
-        //citeste reportul de la offset
         Report r;
+        int found = 0;
 
-        ssize_t bytes = read(fd, &r, sizeof(Report));
+        //citim toate reporturile pentru a gasi pe cel cu id-ul dat; nu putem face lseek direct la offset pentru ca id-urile nu sunt garantat consecutive (daca s-au sters rapoarte)
+        while (1) {
+            ssize_t bytes = read(fd, &r, sizeof(Report));
 
-        if (bytes == 0) {
+            if (bytes == 0) break;
+
+            if (bytes < 0) {
+                perror("read failed");
+                close(fd);
+                return 1;
+            }
+
+            if (bytes != sizeof(Report)) {
+                printf("Corrupted record\n");
+                close(fd);
+                return 1;
+            }
+
+            if (r.id == id) {
+                found = 1;
+                break;
+            }
+        }
+
+        if (!found) {
             printf("Report not found\n");
-            close(fd);
-            return 1;
-        }
-
-        if (bytes < 0) {
-            perror("read failed");
-            close(fd);
-            return 1;
-        }
-
-        if (bytes != sizeof(Report)) {
-            printf("Corrupted record\n");
             close(fd);
             return 1;
         }
@@ -528,6 +529,11 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        if (arg1 == NULL || arg2 == NULL) {
+            printf("Error: missing arguments\n");
+            return 1;
+        }
+
         int id = atoi(arg2);
         if (id <= 0) {
             printf("Invalid report ID\n");
@@ -543,6 +549,49 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        Report r;
+        int index = -1;
+        int current_index = 0;
+
+        if (lseek(fd, 0, SEEK_SET) == -1) {
+            perror("lseek failed");
+            close(fd);
+            return 1;
+        }
+
+        //citim toate reporturile pentru a gasi indexul celui cu id-ul dat; avem nevoie de index pentru a face shift left
+        while (1) {
+            ssize_t bytes = read(fd, &r, sizeof(Report));
+
+            if (bytes == 0) break;
+
+            if (bytes < 0) {
+                perror("read failed");
+                close(fd);
+                return 1;
+            }
+
+            if (bytes != sizeof(Report)) {
+                printf("Corrupted record\n");
+                close(fd);
+                return 1;
+            }
+
+            if (r.id == id) {
+                index = current_index;
+                break;
+            }
+
+            current_index++;
+        }
+
+        if (index == -1) {
+            printf("Report not found\n");
+            close(fd);
+            return 1;
+        }
+
+
         off_t size = lseek(fd, 0, SEEK_END);
         if (size == -1) {
             perror("lseek failed");
@@ -552,16 +601,9 @@ int main(int argc, char *argv[]) {
 
         int total = size / sizeof(Report);
 
-        if (id > total) {
-            printf("Report ID not found\n");
-            close(fd);
-            return 1;
-        }
 
         //shift left pentru a suprascrie reportul cu id-ul dat; 
-        Report r;
-
-        for (int i = id; i < total; i++) {
+        for (int i = index + 1; i < total; i++) {
             //citeste reportul de la pozitia i
             off_t read_pos = i * sizeof(Report);
             if (lseek(fd, read_pos, SEEK_SET) == -1) {
