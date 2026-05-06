@@ -14,6 +14,8 @@
 #define DESC_LEN 100
 //timestamp pt report file
 #include <time.h>
+//pentru fork + exec
+#include <sys/wait.h>
 
 typedef struct {
     int id;
@@ -219,6 +221,11 @@ int main(int argc, char *argv[]) {
             command = "filter";
             arg1 = argv[i + 1];
             filter_index = i;
+        }
+        else if(strcmp(argv[i], "--remove_district") == 0 && i + 1 < argc) {
+            command = "remove_district";
+            arg1 = argv[i + 1];
+            return 1;
         }
     }
 
@@ -771,5 +778,41 @@ int main(int argc, char *argv[]) {
 
         close(fd);
     }
+
+    if(strcmp(command, "remove_district") == 0) {
+        if (strcmp(role, "manager") != 0) {
+            printf("Permission denied: only manager can remove districts\n");
+            return 1;
+        }
+
+        if (arg1 == NULL) {
+            printf("Error: district not specified\n");
+            return 1;
+        }
+
+        pid_t pid = fork();
+
+        if(pid < 0) {
+            perror("fork failed");
+            return 1;
+        }
+
+        if(pid == 0) {
+            //proces copil
+            execlp("rm", "rm", "-rf", arg1, NULL);
+            perror("exec failed");
+            exit(1);
+        }else {
+            //parintele asteapta
+            wait(NULL);
+        }
+
+        char linkname[256];
+        snprintf(linkname, sizeof(linkname), "active_reports-%s", arg1);
+        unlink(linkname);
+
+        log_action(arg1, role, user, "remove_district");
+    }
+
     return 0;
 }
