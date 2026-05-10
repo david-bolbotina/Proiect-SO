@@ -1,3 +1,5 @@
+PHASE 1
+
 I used ChatGPT, this was my prompt:
 
 I am implementing a C program in a Unix environment that manages structured “city inspection reports” stored in a binary file. I only need help generating two helper functions related to filtering.
@@ -112,3 +114,19 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
 
     return 0; // unknown field or operator
 }
+
+
+--------------------------------------------
+
+PHASE 2
+
+The AI tool I used is ChatGPT
+
+
+I provided the AI with an explanation of my existing project structure, including: the city_manager architecture, use of binary files, symlink-based access system, role-based permission, POSIX system call requirements. Based on this, I asked the AI to help me reason about how new functionality should be integrated without breaking the existing design.
+
+I requested assistance in understanding and implementing: safe directory removal using fork() and exec(), proper cleanup of symlinks, correct usage of system calls like unlink() and wait().
+
+I also requested help in designing monitor_reports. The AI provided a breakdown of the program structure with example implementations of signal handlers and guidance on using pause().
+
+I also heavily relied on Visual Studio Code’s autocomplete feature.

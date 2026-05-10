@@ -16,6 +16,8 @@
 #include <time.h>
 //pentru fork + exec
 #include <sys/wait.h>
+//pentru signal handling
+#include <signal.h>
 
 typedef struct {
     int id;
@@ -57,7 +59,7 @@ void log_action(const char *district, const char *role, const char *user, const 
     char path[256];
     snprintf(path, sizeof(path), "%s/logged_district", district);
 
-    int fd = open(path, O_WRONLY | O_APPEND);
+    int fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
     if (fd == -1) {
         perror("open log file");
         return;
@@ -140,6 +142,133 @@ int match_condition(Report *r, const char *field, const char *op, const char *va
     }
 
     return 0; // unknown field or operator
+}
+
+
+int is_safe_district_name(const char *name) {
+
+    // reject la input gol
+    if (name == NULL || strlen(name) == 0)
+        return 0;
+
+    // reject path-uri cu . sau .. sau / pentru a preveni directory traversal sau alte probleme de securitate legate de path-uri
+    if (strcmp(name, ".") == 0 ||
+        strcmp(name, "..") == 0 ||
+        strcmp(name, "/") == 0)
+        return 0;
+
+    // reject daca numele contine slash, pentru a preveni path-uri relative sau absolute
+    if (strchr(name, '/') != NULL)
+        return 0;
+
+    return 1;
+}
+
+void get_reports_path(char *buffer, size_t size, const char *district) {
+    snprintf(buffer, size, "active_reports-%s", district);
+}
+
+
+int validate_reports_link(const char *path) {
+    struct stat st;
+
+    if (lstat(path, &st) == -1) {
+        perror("lstat failed");
+        return 0;
+    }
+
+    //verifica daca e link simbolic
+    if (!S_ISLNK(st.st_mode)) {
+        printf("Warning: %s is not a symbolic link\n", path);
+        return 0;
+    } else {
+        struct stat target_st;
+        //verifica daca linkul nu e dangling; adica daca targetul exista
+        if (stat(path, &target_st) == -1) {
+            printf("Warning: dangling symlink: %s\n", path);
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+void notify_monitor(const char *district) {
+
+    int fd = open(".monitor_pid", O_RDONLY);
+
+    char log_path[256];
+    snprintf(log_path, sizeof(log_path), "%s/logged_district", district);
+
+    int log_fd = open(log_path, O_WRONLY | O_APPEND);
+
+    if (log_fd == -1) {
+        perror("open log");
+        return;
+    }
+
+    // monitor not running
+    if (fd == -1) {
+
+        const char *msg =
+            "Monitor could not be informed: .monitor_pid not found\n";
+
+        write(log_fd, msg, strlen(msg));
+
+        close(log_fd);
+        return;
+    }
+
+    char buffer[50];
+
+    ssize_t bytes = read(fd, buffer, sizeof(buffer) - 1);
+
+    close(fd);
+
+    if (bytes <= 0) {
+
+        const char *msg =
+            "Monitor could not be informed: failed reading PID\n";
+
+        write(log_fd, msg, strlen(msg));
+
+        close(log_fd);
+        return;
+    }
+
+    buffer[bytes] = '\0';
+
+    pid_t pid = atoi(buffer);
+
+    if (pid <= 0) {
+
+        const char *msg =
+            "Monitor could not be informed: invalid PID\n";
+
+        write(log_fd, msg, strlen(msg));
+
+        close(log_fd);
+        return;
+    }
+
+    // SEND SIGNAL
+    if (kill(pid, SIGUSR1) == -1) {
+
+        const char *msg =
+            "Monitor could not be informed: signal sending failed\n";
+
+        write(log_fd, msg, strlen(msg));
+
+        close(log_fd);
+        return;
+    }
+
+    const char *msg =
+        "Monitor successfully informed about new report\n";
+
+    write(log_fd, msg, strlen(msg));
+
+    close(log_fd);
 }
 
 int main(int argc, char *argv[]) {
@@ -225,7 +354,6 @@ int main(int argc, char *argv[]) {
         else if(strcmp(argv[i], "--remove_district") == 0 && i + 1 < argc) {
             command = "remove_district";
             arg1 = argv[i + 1];
-            return 1;
         }
     }
 
@@ -241,6 +369,10 @@ int main(int argc, char *argv[]) {
             printf("Error: district not specified\n");
             return 1;
         }
+
+
+        //CREARE DIRECTOR
+
         //permisiune 750
         if (mkdir(arg1, 0750) == -1) {
             //daca directorul exista deja, nu e o eroare
@@ -251,84 +383,115 @@ int main(int argc, char *argv[]) {
         }
         //seteaza permisiunea explicit, pentru cazul in care directorul exista deja
         chmod(arg1, 0750);
+
+
+        //REPORT FILE
+
         //buffer pentru path
         char path[256];
         //e.g. "district1/reports.dat"
         snprintf(path, sizeof(path), "%s/reports.dat", arg1);
         //creare fisier cu permisiune 664
-        int fd = open(path, O_CREAT | O_RDWR, 0664);
+        int reports_fd = open(path, O_CREAT | O_RDWR, 0664);
         //daca fisierul exista deja, nu e o eroare
-        if (fd == -1) {
+        if (reports_fd == -1) {
             perror("open reports.dat");
             return 1;
         }
         //seteaza permisiunea explicit, pentru cazul in care fisierul exista deja
         chmod(path, 0664);
-        close(fd);
+
+
+        //DISTRICT CONFIG
        
         //aceeasi chestie si pentru restu
         snprintf(path, sizeof(path), "%s/district.cfg", arg1);
 
-        fd = open(path, O_CREAT | O_RDWR, 0640);
-        if (fd == -1) {
+        int cfg_fd = open(path, O_CREAT | O_RDWR, 0640);
+        if (cfg_fd == -1) {
             perror("open district.cfg");
+            close(reports_fd);
             return 1;
         }
         chmod(path, 0640);
-        close(fd);
+        close(cfg_fd);
+
+        //LOG FILE
 
         snprintf(path, sizeof(path), "%s/logged_district", arg1);
 
-        fd = open(path, O_CREAT | O_RDWR, 0644);
-        if (fd == -1) {
+        int log_fd = open(path, O_CREAT | O_RDWR, 0644);
+        if (log_fd == -1) {
             perror("open logged_district");
+            close(reports_fd);
             return 1;
         }
         chmod(path, 0644);
-        close(fd);
+        close(log_fd);
 
 
-       
-        snprintf(path, sizeof(path), "%s/reports.dat", arg1);
+        //CREARE SYMLINK
 
-        fd = open(path, O_RDWR | O_APPEND);
-        if (fd == -1) {
-            perror("open reports.dat");
+        //creare link simbolic in directorul curent pentru a accesa usor rapoartele active; e.g. "active_reports-district1" -> "district1/reports.dat"
+        char target[256];
+        char linkname[256];
+
+        snprintf(target, sizeof(target), "%s/reports.dat", arg1);
+        snprintf(linkname, sizeof(linkname), "active_reports-%s", arg1);
+
+        struct stat st;
+
+        if (lstat(linkname, &st) == -1) {
+
+            if (symlink(target, linkname) == -1) {
+                perror("symlink failed");
+
+                close(reports_fd);
+                return 1;
+            }
+
+            printf("Symlink created: %s -> %s\n", linkname, target);
+        }
+
+
+        //VALIDARE SYMLINK
+
+        get_reports_path(path, sizeof(path), arg1);
+
+        if (!validate_reports_link(path)) {
+            close(reports_fd);
             return 1;
         }
-        //calculeaza id-ul urmatorului report; pentru asta, folosim lseek pentru a afla dimensiunea fisierului
-        off_t size = lseek(fd, 0, SEEK_END);    
-        if (size == -1) {
-            perror("lseek failed");
-            close(fd);
-            return 1;
-        }
-        
+
+
+        //URMATORUL REPORT ID
+
         //logica id; citim toate reporturile din fisier pentru a gasi id-ul maxim, apoi adaugam 1 pentru noul report
         int max_id = 0;
         Report temp;
 
-        // go to start of file
-        if (lseek(fd, 0, SEEK_SET) == -1) {
+        //lseek la inceputul fisierului pentru a citi
+        if (lseek(reports_fd, 0, SEEK_SET) == -1) {
             perror("lseek failed");
-            close(fd);
+            close(reports_fd);
             return 1;
         }
 
+        //citim toate reporturile pentru a gasi id-ul maxim
         while (1) {
-            ssize_t bytes = read(fd, &temp, sizeof(Report));
+            ssize_t bytes = read(reports_fd, &temp, sizeof(Report));
 
             if (bytes == 0) break;
 
             if (bytes < 0) {
                 perror("read failed");
-                close(fd);
+                close(reports_fd);
                 return 1;
             }
 
             if (bytes != sizeof(Report)) {
                 printf("Corrupted record\n");
-                close(fd);
+                close(reports_fd);
                 return 1;
             }
 
@@ -339,12 +502,18 @@ int main(int argc, char *argv[]) {
 
         int next_id = max_id + 1;
 
+
+        //PREGATIRE APPEND
+
         //lseek inapoi la sfarsitul fisierului pentru a adauga noul report
-        if (lseek(fd, 0, SEEK_END) == -1) {
+        if (lseek(reports_fd, 0, SEEK_END) == -1) {
             perror("lseek end failed");
-            close(fd);
+            close(reports_fd);
             return 1;
         }
+
+
+        //CITIRE INPUT USER
 
         printf("Next report ID: %d\n", next_id);
         //initializam cu 0 pentru a evita garbage data in padding
@@ -370,7 +539,7 @@ int main(int argc, char *argv[]) {
         scanf("%d", &r.severity);
         if (r.severity < 1 || r.severity > 3) {
             printf("Invalid severity\n");
-            close(fd);
+            close(reports_fd);
             return 1;
         }
 
@@ -385,14 +554,22 @@ int main(int argc, char *argv[]) {
 
         r.timestamp = time(NULL);
 
-        if (write(fd, &r, sizeof(Report)) != sizeof(Report)) {
+
+        //SCRIERE REPORT
+
+        //scriere report in fisier
+        if (write(reports_fd, &r, sizeof(Report)) != sizeof(Report)) {
             perror("write failed");
-            close(fd);
+            close(reports_fd);
             return 1;
         }
         
+        //logare actiune
         log_action(arg1, role, user, "add");
-        close(fd);
+
+        notify_monitor(arg1);
+
+        close(reports_fd);
     }
 
     if(strcmp(command, "list") == 0) {
@@ -402,7 +579,11 @@ int main(int argc, char *argv[]) {
         }
 
         char path[256];
-        snprintf(path, sizeof(path), "%s/reports.dat", arg1);
+        get_reports_path(path, sizeof(path), arg1);
+
+        if (!validate_reports_link(path)) {
+            return 1;
+        }
 
         int fd = open(path, O_RDONLY);
         if(fd == -1) {
@@ -442,9 +623,9 @@ int main(int argc, char *argv[]) {
 
         }
         
-        //trebuie comentat mai tarziu
         struct stat st;
 
+        //stat pentru a obtine informatii despre fisier, cum ar fi dimensiunea sau data ultimei modificari
         if (stat(path, &st) == -1) {
             perror("stat failed");
             close(fd);
@@ -476,7 +657,11 @@ int main(int argc, char *argv[]) {
         }
 
         char path[256];
-        snprintf(path, sizeof(path), "%s/reports.dat", arg1);
+        get_reports_path(path, sizeof(path), arg1);
+
+        if (!validate_reports_link(path)) {
+            return 1;
+        }
 
         int fd = open(path, O_RDONLY);
         if (fd == -1) {
@@ -548,7 +733,11 @@ int main(int argc, char *argv[]) {
         }
 
         char path[256];
-        snprintf(path, sizeof(path), "%s/reports.dat", arg1);
+        get_reports_path(path, sizeof(path), arg1);
+
+        if (!validate_reports_link(path)) {
+            return 1;
+        }
 
         int fd = open(path, O_RDWR);
         if (fd == -1) {
@@ -711,6 +900,10 @@ int main(int argc, char *argv[]) {
     if (strcmp(command, "filter") == 0) {
         for (int i = filter_index + 2; i < argc; i++) {
             conditions[condition_count++] = argv[i];
+            if (condition_count >= 10) {
+                printf("Too many conditions\n");
+                return 1;
+            }
         }
 
         if (arg1 == NULL) {
@@ -719,7 +912,11 @@ int main(int argc, char *argv[]) {
         }
 
         char path[256];
-        snprintf(path, sizeof(path), "%s/reports.dat", arg1);
+        get_reports_path(path, sizeof(path), arg1);
+
+        if (!validate_reports_link(path)) {
+            return 1;
+        }
 
         int fd = open(path, O_RDONLY);
         if (fd == -1) {
@@ -790,6 +987,25 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
+        //verificam daca numele districtului e sigur pentru a preveni probleme de securitate legate de path-uri
+        if (!is_safe_district_name(arg1)) {
+            printf("Unsafe district name\n");
+            return 1;
+        }
+
+        struct stat st;
+
+        if (stat(arg1, &st) == -1) {
+            perror("stat failed");
+            return 1;
+        }
+
+        //verificam daca calea specificata e un director, pentru a preveni stergerea accidentala a fisierelor sau alte probleme de securitate
+        if (!S_ISDIR(st.st_mode)) {
+            printf("Not a directory\n");
+            return 1;
+        }
+
         pid_t pid = fork();
 
         if(pid < 0) {
@@ -799,7 +1015,7 @@ int main(int argc, char *argv[]) {
 
         if(pid == 0) {
             //proces copil
-            execlp("rm", "rm", "-rf", arg1, NULL);
+            execlp("rm", "rm", "-rf", "--", arg1, NULL);
             perror("exec failed");
             exit(1);
         }else {
@@ -811,7 +1027,8 @@ int main(int argc, char *argv[]) {
         snprintf(linkname, sizeof(linkname), "active_reports-%s", arg1);
         unlink(linkname);
 
-        log_action(arg1, role, user, "remove_district");
+        //defapt nevermind, log-ul asta n-are nici un sens
+        //log_action(arg1, role, user, "remove_district");
     }
 
     return 0;
